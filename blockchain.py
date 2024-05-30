@@ -1,39 +1,46 @@
 import hashlib
-import time
-from dataclasses import dataclass
-from dacite import from_dict
+import dataclasses
 import copy
+import json
+from dacite import from_dict
 
-@dataclass
+@dataclasses.dataclass
 class Transaction:
     sender: str
     recipient: str
     amount: float
 
+@dataclasses.dataclass
+class SignedTransaction:
+    transaction: Transaction
+    signature: str
 
-@dataclass
+@dataclasses.dataclass
 class Block:
     index: int
-    transactions: list[Transaction]
+    transactions: list[SignedTransaction]
     proof: int
     previous_hash: str
 
 
 class Blockchain:
-    def __init__(self, address, difficulty_number, mining_reward):
+    def __init__(self, address, difficulty_number, mining_reward, signer):
         self.address = address
         self.difficulty_number = difficulty_number
         self.mining_reward = mining_reward
+        self.signer = signer
+        self.pubkeylist = {}
+
         self.chain = []
         self.current_transactions = []
         self.players = set()
-    
-        # manually added first block to the chain so adding another block is possible since it requires hash of prev block
+
+        # Create first block
         first_block = self.create_block(1, [], 0, "0")
         while not self.check_proof(first_block):
             first_block.proof += 1
         self.chain.append(first_block)
-    
+
     def create_block(self, index, transactions, proof, previous_hash):
         return Block(index, copy.copy(transactions), proof, previous_hash)
 
@@ -46,8 +53,23 @@ class Blockchain:
     def current_block(self):
         return self.chain[-1]
 
-    def add_transaction(self, sender, recipient, amount):
-        self.current_transactions.append(Transaction(sender, recipient, amount))
+    
+    def add_transaction(self, recipient, amount, mining=False):
+
+        # If it is a self-reward for mining, set the sender to None
+        if mining is True: 
+            transaction = Transaction(None, recipient, amount)
+        else: transaction = Transaction(self.address, recipient, amount)
+
+        transaction_bytes = json.dumps(dataclasses.asdict(transaction)).encode('utf-8')
+
+        signature = str(self.signer.generate_signature(transaction_bytes))
+        self.current_transactions.append(SignedTransaction(transaction, signature))
+    
+    
+    def add_player(self, address, pubkey): 
+        self.players.add(address)
+        self.pubkeylist[address] = pubkey
 
     def next_index(self):
         return len(self.chain) + 1
@@ -55,66 +77,58 @@ class Blockchain:
     def get_length(self):
         return len(self.chain)
 
-    def add_block(self, block):
+    def add_block(self, block): 
         if self.check_proof(block):
             self.chain.append(block)
 
-    def add_player(self, address):
-        self.players.add(address)
-
-    def hash_block(self, block):
+    def hash_block(self, block): 
         return hashlib.sha256(str(block).encode()).hexdigest()
 
     def check_proof(self, block):
         # Check that the hash of the block ends in difficulty_number many zeros
-        hashed = self.hash_block(block)
-        checkzeros = hashed[-self.difficulty_number:]
-        for i in checkzeros:
-            if i != '0':
+        block_hash = self.hash_block(block)
+        for i in range(1, self.difficulty_number + 1):
+            if block_hash[-i] != '0':
                 return False
         return True
 
     def mine(self):
+        # TODO: Don't mine if there have been no transactions to be mined
+
         # Give yourself a reward at the beginning of the transactions
-        reward = self.create_transaction("Block reward", self.address, self.mining_reward)
-        self.current_transactions.insert(0, reward)
+        self.add_transaction(self.address, 10, mining=True)
 
         # Find the right value for proof
-        prevblock = self.current_block()
-        prevhashvalue = self.hash_block(prevblock)
-
-        powguess = 0 
-        while(True):
-            testblock = self.create_block(self.next_index(), self.current_transactions, powguess, prevhashvalue)
-            if(self.check_proof(testblock)):
+        guess = 0
+        while True:
+            block = self.create_block(self.next_index(), self.current_transactions, guess, self.hash_block(self.current_block()))
+            if(self.check_proof(block)):
+                self.add_block(block)
                 break
-            powguess += 1
+            guess+=1
         
         # Add the block to the chain
-        self.add_block(testblock)
-
         # Clear your current transactions
         self.current_transactions = []
 
+    # TODO: Add signature checking to validate_chain to check the transaction of each block
     def validate_chain(self, chain):
         # Check that the chain is valid
         # The chain is an array of blocks
         # You should check that the hashes chain together
         # The proofs of work should be valid
-        i = 1
-        chain_len = len(self.chain)
-        if chain_len == 1:
-            return True
-        
-        # if chain is not 1 block, check
-        while i in range(chain_len):
-            #check for prev block hash contained
-            blockhash = self.hash_block(self.chain[i-1])
-            if(self.chain[i].previous_hash != blockhash):
+
+        prev_hash = 0
+        for i in range(len(chain)):
+            if not self.check_proof(chain[i]):
+                print(i + " check_proof fail")
                 return False
-            #check for correct amount of zeros in current block hash
-            if not self.check_proof(self.chain[i]):
+
+            if i > 0 and prev_hash != chain[i].previous_hash:
+                print(i + " prev_hash fail")
                 return False
+            
+            prev_hash = self.hash_block(chain[i])
 
         return True
 
@@ -124,5 +138,3 @@ class Blockchain:
             self.chain = chain
             return True
         return False
-
-# (_)
